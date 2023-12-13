@@ -16,7 +16,7 @@ func TestReaderWriter(t *testing.T) {
 	// create the key of 32 bit length
 	key1 := [keySize]byte(key)
 
-	toEncrypt := []byte("CECI EST un Test")
+	toEncrypt := []byte("CECI EST un Tes")
 	chunkSize := 5
 	h := header{}
 	h.SetChunkSize(uint32(chunkSize))
@@ -25,6 +25,7 @@ func TestReaderWriter(t *testing.T) {
 		panic("Cannot generate the IV")
 	}
 	h.SetIV(iv)
+	h.SetFilename("test.txt")
 
 	// Buffer to write encrypted data to
 	buff := bytes.NewBuffer([]byte{})

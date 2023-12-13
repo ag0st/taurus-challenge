@@ -136,10 +136,10 @@ func (dr *decReader) Read(p []byte) (n int, err error) {
 		// If there is enough place into p for the chunk, decrypt directly into it.
 		// Else decrypt it into the plaintext buffer, the next loop will push it into p
 		if len(p)-n >= nn-seqNumSize-tagSizeByte {
-			_, err = dr.aesgcm.Open(p[n:n], currentIV, cipherBuf[seqNumSize:], nil)
+			_, err = dr.aesgcm.Open(p[n:n], currentIV, cipherBuf[seqNumSize:], dr.header.aad())
 			n += nn - seqNumSize - tagSizeByte
 		} else {
-			dr.buf, err = dr.aesgcm.Open(nil, currentIV, cipherBuf[seqNumSize:], nil)
+			dr.buf, err = dr.aesgcm.Open(nil, currentIV, cipherBuf[seqNumSize:], dr.header.aad())
 			dr.buf = dr.buf[:len(dr.buf)-tagSizeByte] // remove the tag
 		}
 
@@ -256,7 +256,7 @@ func (ew *encWriter) sealBuf(isFinal bool) []byte {
 	binary.BigEndian.PutUint32(currentIV[ivHeaderSize-seqNumSize:], binary.BigEndian.Uint32(currentIV[ivHeaderSize-seqNumSize:])^currentSeqNum)
 	// 2. Encrypt the data
 	toPush := make([]byte, destSize)
-	ew.aesgcm.Seal(toPush[seqNumSize:seqNumSize], currentIV, ew.buf, nil)
+	ew.aesgcm.Seal(toPush[seqNumSize:seqNumSize], currentIV, ew.buf, ew.header.aad())
 	// 3. Push the encrypted data to the writer
 	binary.BigEndian.PutUint32(toPush[:seqNumSize], currentSeqNum)
 	return toPush

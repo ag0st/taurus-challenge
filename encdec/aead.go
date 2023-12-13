@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"io"
 
 	"golang.org/x/crypto/hkdf"
@@ -36,26 +37,38 @@ import (
 //	|C Size |       IV        |
 //	+-------+-----------------+
 const (
-    chunkHeaderOffset = 0
-	chunkHeaderSize = 4
-	ivHeaderSize    = 12
-	ivHeaderOffset  = chunkHeaderSize
-	headerSizeByte  = chunkHeaderSize + ivHeaderSize
-	tagSizeByte     = 16
-	keySize         = 32
+	filenameHeaderOffset = 0
+	filenameHeaderSize   = 50
+	chunkHeaderOffset    = filenameHeaderOffset + filenameHeaderSize
+	chunkHeaderSize      = 4
+	ivHeaderSize         = 12
+	ivHeaderOffset       = chunkHeaderOffset + chunkHeaderSize
+	headerSizeByte       = filenameHeaderSize + chunkHeaderSize + ivHeaderSize
+	tagSizeByte          = 16
+	keySize              = 32
 )
+
+var filenameTooLong = errors.New("filename too long, max 50 bytes")
 
 type header [headerSizeByte]byte
 
-func (h header) IV() []byte { return h[ivHeaderOffset:ivHeaderOffset+ivHeaderSize] }
+func (h header) IV() []byte { return h[ivHeaderOffset : ivHeaderOffset+ivHeaderSize] }
 func (h *header) SetIV(iv [ivHeaderSize]byte) {
 	copy(h[ivHeaderOffset:ivHeaderOffset+ivHeaderSize], iv[:])
 }
-func (h header) ChunkSize() uint32 { 
-    return binary.BigEndian.Uint32(h[chunkHeaderOffset:chunkHeaderSize])
+func (h header) ChunkSize() uint32 {
+	return binary.BigEndian.Uint32(h[chunkHeaderOffset : chunkHeaderOffset+chunkHeaderSize])
 }
 func (h *header) SetChunkSize(size uint32) {
-    binary.BigEndian.PutUint32(h[chunkHeaderOffset:chunkHeaderSize], size)
+	binary.BigEndian.PutUint32(h[chunkHeaderOffset:chunkHeaderOffset+chunkHeaderSize], size)
+}
+func (h *header) aad() []byte { return h[:filenameHeaderSize+chunkHeaderSize] }
+func (h *header) SetFilename(filename string) error {
+	if len(filename) > filenameHeaderSize {
+		return filenameTooLong
+	}
+	copy(h[filenameHeaderOffset:filenameHeaderOffset + filenameHeaderSize], []byte(filename))
+	return nil
 }
 
 // Encrypt reads the content from the reader and write it encrypted to the writer.
