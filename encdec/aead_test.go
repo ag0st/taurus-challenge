@@ -33,7 +33,7 @@ func TestEncrypt(t *testing.T) {
 	}(ctx, io.MultiWriter(buffer, os.Stdout))
 
 	buff := bytes.NewBuffer([]byte{})
-	err = Encrypt(ctx, io.MultiWriter(pw, buff), reader)
+	err = Encrypt(ctx, io.MultiWriter(pw, buff), reader, 5, "test.txt")
 	pw.CloseWithError(err)
 
 	if err != nil {

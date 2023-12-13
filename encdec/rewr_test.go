@@ -25,7 +25,8 @@ func TestReaderWriter(t *testing.T) {
 		panic("Cannot generate the IV")
 	}
 	h.SetIV(iv)
-	h.SetFilename("test.txt")
+	filename := "test.txt"
+	h.SetFilename(filename)
 
 	// Buffer to write encrypted data to
 	buff := bytes.NewBuffer([]byte{})
@@ -56,5 +57,16 @@ func TestReaderWriter(t *testing.T) {
 
 	if string(res) != string(toEncrypt) {
 		t.Fail()
+	}
+	if r, ok := dr.(*decModeReader); ok {
+		fn, err := r.filename()
+		if err != nil {
+			panic(err)
+		}
+		if fn != filename {
+			t.Fail()
+		}
+	} else {
+		panic("cannot convert reader to decReader")
 	}
 }
