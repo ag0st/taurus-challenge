@@ -1,0 +1,153 @@
+openapi: 3.0.3
+info:
+  version: '0.0.1'
+  title: 'Service API'
+servers:
+  - url: 'http://127.0.0.1:8080'
+tags:
+  - name: Upload
+    description: 'Upload a new file'
+  - name: List
+    description: 'List all the available files'
+  - name: Download
+    description: 'Download a specific file'
+paths:
+  /api/file:
+    post:
+      summary: 'Add a new file'
+      tags:
+        - Upload
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/FileUpload'
+      responses:
+        '200':
+          description: 'The file has correctly been added'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileUploadSuccess'
+        '400':
+          description: 'File does not follow standard'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 'Error from the server, cannot push the file'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    get:
+      summary: 'Retrieve the list of files'
+      tags:
+        - List
+      responses:
+        '200':
+          description: 'Successfuly retrieved the list of files'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileList'
+        '500':
+          description: 'Cannot retrieve the list of files'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/file/{object_name}:
+    get:
+      summary: 'Download a specific file'
+      tags:
+        - Download
+      parameters:
+        - in: path
+          name: object_name
+          schema:
+            type: integer
+          required: true
+          description: object name of the file (as in list)
+      responses:
+        '200':
+          description: 'The file has successfuly been retrieved'
+          content:
+            multipart/form-data:
+              schema:
+                $ref: '#/components/schemas/File'
+        '400':
+          description: 'No file found with the specified object name'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 'File found but something went wrong'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  schemas:
+    FileUpload:
+      type: object
+      required:
+        - file
+      properties:
+        file:
+          type: string
+          format: binary
+        object_name:
+          type: string
+    FileUploadSuccess:
+      type: object
+      required:
+        - object_name
+        - versionID
+      properties:
+        object_name:
+          type: string
+        versionID:
+          type: string
+    File:
+      type: object
+      required:
+        - file
+      properties:
+        file:
+          type: string
+          format: binary
+    FileItem:
+      type: object
+      required:
+        - object_name
+        - size
+      properties:
+        object_name:
+          type: string
+        size:
+          type: integer
+    FileList:
+      type: array
+      items:
+        $ref: '#/components/schemas/FileItem'
+    Error:
+      type: object
+      required:
+        - type
+        - message
+        - path
+        - timestamp
+      properties:
+        type:
+          type: string
+        message:
+          type: string
+        path:
+          type: string
+        timestamp:
+          type: string
+        

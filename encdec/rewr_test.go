@@ -19,7 +19,7 @@ func TestReaderWriter(t *testing.T) {
 	toEncrypt := []byte("CECI EST un Tes")
 	chunkSize := 5
 	h := header{}
-	h.SetChunkSize(uint32(chunkSize))
+	h.SetChunkSize(uint64(chunkSize))
 	iv, err := generateIV()
 	if err != nil {
 		panic("Cannot generate the IV")
@@ -30,7 +30,7 @@ func TestReaderWriter(t *testing.T) {
 
 	// Buffer to write encrypted data to
 	buff := bytes.NewBuffer([]byte{})
-	ew, err := newEncWriter(key1, h, buff)
+	ew, err := NewEncWriter(key1, h, buff)
 	if err != nil {
 		panic(err)
 	}
@@ -46,7 +46,7 @@ func TestReaderWriter(t *testing.T) {
 		headerSizeByte+(len(toEncrypt)/chunkSize)*(chunkSize+seqNumSize+tagSizeByte))
 
 	// Now read from it
-	dr, err := newDecReader(key1, buff)
+	dr, err := NewDecReader(key1, buff)
 	if err != nil {
 		panic(err)
 	}
@@ -59,7 +59,7 @@ func TestReaderWriter(t *testing.T) {
 		t.Fail()
 	}
 	if r, ok := dr.(*decModeReader); ok {
-		fn, err := r.filename()
+		fn, err := r.Filename()
 		if err != nil {
 			panic(err)
 		}
@@ -68,5 +68,46 @@ func TestReaderWriter(t *testing.T) {
 		}
 	} else {
 		panic("cannot convert reader to decReader")
+	}
+}
+
+func TestReadToWriteTo(t *testing.T) {
+	key, err := hex.DecodeString("000102030405060708090A0B0C0D0E0FF0E0D0C0B0A090807060504030201000")
+	if err != nil {
+		panic(err)
+	}
+	// create the key of 32 bit length
+	key1 := [keySize]byte(key)
+
+	toEncrypt := []byte("CECI EST un Test")
+	chunkSize := 5
+	h := header{}
+	h.SetChunkSize(uint64(chunkSize))
+	iv, err := generateIV()
+	if err != nil {
+		panic("Cannot generate the IV")
+	}
+	h.SetIV(iv)
+	filename := "test.txt"
+	h.SetFilename(filename)
+
+	temp := bytes.NewBuffer([]byte{})
+	dest := bytes.NewBuffer([]byte{})
+	src := bytes.NewBuffer(toEncrypt)
+	ew, err := NewEncWriter(key1, h, temp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dr, err := NewDecReader(key1, temp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(ew, src)
+	ew.Close()
+	io.Copy(dest, dr)
+	
+
+	if string(dest.String()) != string(toEncrypt) {
+		t.Fail()
 	}
 }

@@ -1,0 +1,10 @@
+service:
+  address: ':8080'
+  chunk_size: 5 MBi
+  aes_encryption_key: 000102030405060708090A0B0C0D0E0FF0E0D0C0B0A090807060504030201000
+
+minio:
+  access_key: 'JgfDSlT6yRBmM8tX4GRr'
+  secret_key: 'Q0zNgsGFTVeiU8gpTLSG3kVgAvNZeuVZ4E2WZsZ6'
+  endpoint: '127.0.0.1:9000'
+  bucket: 'testbucket'

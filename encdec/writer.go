@@ -4,20 +4,21 @@ import (
 	"bytes"
 	"crypto/cipher"
 	"encoding/binary"
-	"errors"
 	"io"
+
+	"github.com/ag0st/taurus-challenge/errs"
 )
 
 // Errors declarations
 var (
-	ErrTooMuchChunk error = errors.New("too much chunk produced. Max = 0xFFFF_FFFF")
-	ErrNoLastChunk  error = errors.New("no last chunk to write when closing the writer")
-	ErrWriteClosed  error = errors.New("writer already closed")
+	ErrTooMuchChunk error = errs.New("too much chunk produced. Max = 0xFFFF_FFFF")
+	ErrNoLastChunk  error = errs.New("no last chunk to write when closing the writer")
+	ErrWriteClosed  error = errs.New("writer already closed")
 )
 
 // newEncWriter creates the right type of writer regarding the data stored inside the header.
 // It can create chunk writer or whole writer.
-func newEncWriter(key [keySize]byte, header header, dest io.Writer) (io.WriteCloser, error) {
+func NewEncWriter(key [keySize]byte, header header, dest io.Writer) (io.WriteCloser, error) {
 	cipher, err := newCipher(key)
 	if err != nil {
 		return nil, err
@@ -59,38 +60,32 @@ type encChunkWriter struct {
 	firstWrite bool        // used to write the header on the first time
 }
 
-func (ew *encChunkWriter) Write(p []byte) (n int, err error) {
-	if ew.isClosed {
+func (ecw *encChunkWriter) Write(p []byte) (n int, err error) {
+	if ecw.isClosed {
 		return 0, ErrWriteClosed
 	}
-	if ew.firstWrite {
-		// Write the header
-		ew.firstWrite = false
-		_, err = ew.dest.Write(ew.header[:])
-		if err != nil {
-			ew.isClosed = true
-			return 0, err
-		}
-	}
 	// encrypt until we have read everything and that it remains enough for a last chunk
-	for n < len(p) && len(p)-n > int(ew.header.ChunkSize())-ew.offset {
+	for n < len(p) && len(p)-n > int(ecw.header.ChunkSize())-ecw.offset {
 		// copy the maximum we can into our buffer
 		// The buffer will be fulfilled regarding the condition of the for
-		n += copy(ew.buf[ew.offset:], p[n:])
-		ew.offset = 0
+		n += copy(ecw.buf[ecw.offset:], p[n:])
+		ecw.offset = 0
 
-		// Encrypt the data
+		// Encrypt and push the data
 
-		ew.dest.Write(ew.sealBuf(false))
-		ew.currSeqNum++
+		_, err := ecw.dest.Write(ecw.sealBuf(false))
+		if err != nil {
+			return 0, errs.Wrap(err, "cannot encrypt to the underlying writer")
+		}
+		ecw.currSeqNum++
 		// check we did not passed the maximum seq number
-		if ew.currSeqNum == LAST_CHUNK_SEQ_NUM {
+		if ecw.currSeqNum == LAST_CHUNK_SEQ_NUM {
 			return n, ErrTooMuchChunk
 		}
 	}
 	// copy the last bits of data into the buffer
-	bn := copy(ew.buf[ew.offset:], p[n:])
-	ew.offset += bn
+	bn := copy(ecw.buf[ecw.offset:], p[n:])
+	ecw.offset += bn
 	n += bn
 	if n < len(p) {
 		return n, io.ErrShortWrite
@@ -100,40 +95,66 @@ func (ew *encChunkWriter) Write(p []byte) (n int, err error) {
 
 // Close closes the encChunkWriter by pushing the last chunk into the destination and close
 // the destination if needed.
-func (ew *encChunkWriter) Close() error {
-	ew.isClosed = true
-	if ew.offset == 0 {
+func (ecw *encChunkWriter) Close() error {
+	ecw.isClosed = true
+	if ecw.offset == 0 {
 		return ErrNoLastChunk
 	}
-	_, err := ew.dest.Write(ew.sealBuf(true))
-	if w, ok := ew.dest.(io.WriteCloser); ok {
+	_, err := ecw.dest.Write(ecw.sealBuf(true))
+	if w, ok := ecw.dest.(io.WriteCloser); ok {
 		return w.Close()
 	}
 	return err
+}
+
+// ReadFrom is the implementation of io.ReaderFrom for the encChunkWriter.
+func (ecw *encChunkWriter) ReadFrom(r io.Reader) (n int64, err error) {
+	// we read directly by chunk size and push it to the write method
+	var buffer = make([]byte, ecw.header.ChunkSize())
+	for {
+		nn, err := r.Read(buffer[:])
+		n += int64(nn)
+		if err != nil {
+			if err == io.EOF && nn == 0 {
+				break
+			} else if err != io.EOF {
+				return n, err
+			}
+		}
+		if _, err = ecw.Write(buffer[:nn]); err != nil {
+			return n, err
+		}
+	}
+	return n, err
 }
 
 // sealBuf seal the current plaintext buffer and return the encrypted result.
 // This result can then be used to push into the underlying writer.
 // isFinal must be only used once for the writer, it seals the final chunk.
 // The user must assured that the plaintext buffer is not empty before calling this method.
-func (ew *encChunkWriter) sealBuf(isFinal bool) []byte {
+func (ecw *encChunkWriter) sealBuf(isFinal bool) []byte {
 	// 1. we need to build the IV for this chunk, embed the sequence number
-	currentIV := ew.header.IV()
-	var destSize uint32 = seqNumSize + tagSizeByte
-	currentSeqNum := ew.currSeqNum
+	currentIV := ecw.header.IV()
+	var destSize uint64 = seqNumSize + tagSizeByte
+	currentSeqNum := ecw.currSeqNum
 	if isFinal { // if is final chunk, put 0xFFFF_FFFF as sequence number
 		currentSeqNum = LAST_CHUNK_SEQ_NUM
-		destSize += uint32(ew.offset)
-		ew.buf = ew.buf[:ew.offset] // limit the plaintext to write
+		destSize += uint64(ecw.offset)
+		ecw.buf = ecw.buf[:ecw.offset] // limit the plaintext to write
 	} else {
-		destSize += ew.header.ChunkSize()
+		destSize += ecw.header.ChunkSize()
 	}
 	binary.BigEndian.PutUint32(currentIV[ivHeaderSize-seqNumSize:], binary.BigEndian.Uint32(currentIV[ivHeaderSize-seqNumSize:])^currentSeqNum)
 	// 2. Encrypt the data
 	toPush := make([]byte, destSize)
-	ew.aesgcm.Seal(toPush[seqNumSize:seqNumSize], currentIV, ew.buf, ew.header.aad())
+	ecw.aesgcm.Seal(toPush[seqNumSize:seqNumSize], currentIV, ecw.buf, ecw.header.aad())
 	// 3. Push the encrypted data to the writer
 	binary.BigEndian.PutUint32(toPush[:seqNumSize], currentSeqNum)
+	// 4. If it is the first write, append the header in the front
+	if ecw.firstWrite {
+		ecw.firstWrite = false
+		return append(ecw.header[:], toPush...)
+	}
 	return toPush
 }
 
@@ -171,4 +192,13 @@ func (eww *encWholeWriter) Close() error {
 	toPush := eww.aesgcm.Seal(nil, eww.header.IV(), eww.buf, eww.header.aad())
 	_, err := io.Copy(eww.dest, io.MultiReader(bytes.NewReader(eww.header[:]), bytes.NewReader(toPush)))
 	return err
+}
+
+// ReadFrom is the implementation of io.ReaderFrom for the encWholeWriter
+func (eww *encWholeWriter) ReadFrom(r io.Reader) (n int64, err error) {
+	// It does not use the method write, instead it pushes directly
+	// the whole data into the internal buffer of the encWholeWriter.
+	// This way it uses 1 buffer less
+	eww.buf, err = io.ReadAll(r)
+	return int64(len(eww.buf)), err
 }
