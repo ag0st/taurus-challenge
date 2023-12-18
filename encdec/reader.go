@@ -22,16 +22,20 @@ import (
 
 // Errors declarations
 var (
+	// ErrInvalidSeqNum error is thrown when the decrypted chunks are not in sequence
 	ErrInvalidSeqNum error = errs.New("chunk in invalid sequence")
-	ErrNoFirstRead   error = errs.New("not already read the header")
+	// ErrNoFirst error is thrown when the caller asks for properties (filename, header)
+	// and the header has not yet been read. The header is read on the firs call to
+	// Read([]byte) method
+	ErrNoFirstRead error = errs.New("not already read the header")
 )
 
 // Reader is a decrypting reader. It wraps an io.Reader and allow decryption
-// during the read.
+// during the read. It also implement io.WriterTo interface.
 type Reader interface {
 	io.Reader
 	io.WriterTo
-	// gives the header of the current data
+	// Gives the filename of the current file. Must call Read first.
 	Filename() (string, error)
 }
 
@@ -45,9 +49,10 @@ type subReader interface {
 }
 
 // NewDecReader creates a new deryption reader able to decrypt an encrypted file
-// with a encdec.EncWriter
+// with a encdec.EncWriter. Its purpose is to wrap an existing io.Reader containing
+// the encrypted data.
 func NewDecReader(key [keySize]byte, src io.Reader) (Reader, error) {
-	// Get the key from the context
+	// Create the cipher
 	cipher, err := newCipher(key)
 	if err != nil {
 		return nil, err
@@ -60,30 +65,31 @@ func NewDecReader(key [keySize]byte, src io.Reader) (Reader, error) {
 }
 
 // decModeReader is a wrapper structure around the a decryption reader.
-// it allow to create one object that is able to initialize the right
+// It allows to create one object that is able to initialize the right
 // reader on the first read (need to have the header to know which reader
 // to create).
 type decModeReader struct {
-	reader    subReader
-	firstRead bool
-	src       io.Reader
+	reader    subReader   // the underlying subReader
+	firstRead bool        // store if the reader has already not yet read something.
+	src       io.Reader   // reader containing the encrypted data.
 	aesgcm    cipher.AEAD // The standard implementation of a cipher AEAD
 }
 
 func (dmr *decModeReader) Read(p []byte) (n int, err error) {
 	if dmr.firstRead {
-		// Extract the header
+		// Extract the header on the first read
 		n, err := dmr.readHeader()
 		if err != nil {
 			return n, err
 		}
+		dmr.firstRead = false
 		nn, err := dmr.reader.Read(p)
 		return nn, err
 	}
 	return dmr.reader.Read(p)
 }
 
-// filename gives the name of the file currently in decryption.
+// Filename gives the name of the file currently in decryption.
 // If the header of the stream has not yet been read (no first read),
 // it returns an ErrNoFirstRead error.
 func (dmr *decModeReader) Filename() (string, error) {
@@ -96,43 +102,39 @@ func (dmr *decModeReader) Filename() (string, error) {
 // WriteTo call the inside WriterTo (reader) method.
 // It also reads the header first before calling WriteTo
 func (dmr *decModeReader) WriteTo(w io.Writer) (int64, error) {
-	n, err := dmr.readHeader()
-	if err != nil {
-		return int64(n), err
+	if dmr.firstRead {
+		n, err := dmr.readHeader()
+		if err != nil {
+			return int64(n), err
+		}
+		dmr.firstRead = false
 	}
 	return dmr.reader.WriteTo(w)
 }
 
 // readHeader reads the first bytes of the src reader to construct the header.
 // It initialize the inner reader (chunk or whole).
+// PRE : the caller must ensure that dmr.firstRead = true before calling the method.
 func (dmr *decModeReader) readHeader() (int, error) {
-	if dmr.firstRead {
-		// Extract the header
-		// Take the header from the reader
-		var h [headerSizeByte]byte
-		n, err := io.ReadFull(dmr.src, h[:])
-		if err != nil {
-			return n, err
-		}
-		header := header(h)
-
-		// create the correct reader regarding the mode
-		var reader subReader
-		if header.ChunkSize() > 0 {
-			reader = newDecChunkReader(dmr.aesgcm, header, dmr.src)
-		} else {
-			reader = newDecWholeReader(dmr.aesgcm, header, dmr.src)
-		}
-		dmr.reader = reader
-		dmr.firstRead = false
-
+	var h [headerSizeByte]byte
+	n, err := io.ReadFull(dmr.src, h[:])
+	if err != nil {
 		return n, err
 	}
-	return 0, nil
+	header := header(h)
+
+	// create the correct reader regarding the mode
+	var reader subReader
+	if header.ChunkSize() > 0 {
+		reader = newDecChunkReader(dmr.aesgcm, header, dmr.src)
+	} else {
+		reader = newDecWholeReader(dmr.aesgcm, header, dmr.src)
+	}
+	dmr.reader = reader
+	return n, err
 }
 
-// decChunkReader is an implementation of decReader that decrypt using the chunk technique.
-// It is used as a wrapper around another reader.
+// decChunkReader is an implementation of subReader that decrypts using the chunk technique.
 type decChunkReader struct {
 	aesgcm     cipher.AEAD // The standard implementation of a cipher AEAD
 	buf        []byte      // buffer for already decrypted plaintext that have not been passed to the destination
@@ -295,10 +297,17 @@ func (dwr *decWholeReader) Read(p []byte) (n int, err error) {
 		}
 		// Remove the tag at the end
 		dwr.buf = dwr.buf[:len(dwr.buf)-tagSizeByte]
+
+		dwr.decrypted = true
+	}
+
+	if len(dwr.buf) == 0 {
+		return 0, io.EOF
 	}
 
 	// push the maximum
 	n = copy(p, dwr.buf)
+	dwr.buf = dwr.buf[n:]
 	return n, nil
 }
 

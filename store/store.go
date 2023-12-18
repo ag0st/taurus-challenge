@@ -13,8 +13,9 @@ import (
 
 // errors declaration
 var (
-	ErrNoConnection   = errs.New("no connection instanciated, please call store.Connect before")
-	ErrWrongChunkSize = errs.New("wrong chunk size, must be : 5<<20 <= chunkSize <= 5<<30")
+	// ErrWrongChunkSize error is thrown when the chunk size given does not respect
+	// the limitations.
+	ErrWrongChunkSize = errs.New("wrong chunk size, must be : 5<<20 <= chunkSize <= 5<<30 or equal to 0")
 )
 
 // Connection is the minio core used across the package to communicate with the minio server.
@@ -46,7 +47,7 @@ func Connect(endpoint, accessKey, secretKey string) (*Connection, error) {
 // Max of 10'000 chunk is here : https://github.com/minio/minio/blob/b3314e97a64a42d22ba5b939917939d72a28c97d/cmd/utils.go#L277
 func (c *Connection) PushObject(ctx context.Context, r io.Reader, chunkSize uint64, bucketname, objectName, filename, contentType string) (minio.UploadInfo, error) {
 	// precondition
-	if chunkSize < 5<<20 || chunkSize > 5<<30 {
+	if chunkSize != 0 && (chunkSize < 5<<20 || chunkSize > 5<<30) {
 		return minio.UploadInfo{}, ErrWrongChunkSize
 	}
 	// create a new store writer and wrap it with en encrypt writer.

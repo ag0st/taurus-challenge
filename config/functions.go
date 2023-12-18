@@ -145,7 +145,7 @@ func NewConfig(configPath string) (*Config, error) {
 	chunkSize, err := extractSize(configyml.Service.ChunkSizeStr)
 	if err != nil {
 		return nil, err
-	} else if chunkSize < 5<<20 || chunkSize > 5<<30 {
+	} else if chunkSize != 0 && (chunkSize < 5<<20 || chunkSize > 5<<30) {
 		return nil, errs.New("chunk size must be between 5<<20 and 5<<30 (included)")
 	}
 
