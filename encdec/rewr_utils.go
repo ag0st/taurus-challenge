@@ -36,8 +36,10 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"io"
 
 	"github.com/ag0st/taurus-challenge/errs"
 )
@@ -107,4 +109,13 @@ func newCipher(key [keySize]byte) (cipher.AEAD, error) {
 	}
 	return aesgcm, nil
 
+}
+
+
+// generateIV creates a new IV
+func generateIV() (iv [ivHeaderSize]byte, err error) {
+	// generate a random IV. The IV is set to the header which is not encrypted but authentified.
+	// The IV is not required to be secret.
+	_, err = io.ReadFull(rand.Reader, iv[:])
+	return
 }
