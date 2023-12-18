@@ -5,17 +5,36 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
 	"testing"
 )
 
-func TestReaderWriter(t *testing.T) {
-	key, err := hex.DecodeString("000102030405060708090A0B0C0D0E0FF0E0D0C0B0A090807060504030201000")
-	if err != nil {
-		panic(err)
-	}
-	// create the key of 32 bit length
-	key1 := [keySize]byte(key)
+var (
+	testKey [keySize]byte
+	testIV  [ivHeaderSize]byte
+)
 
+func TestMain(m *testing.M) {
+	setupErrorCode := 1
+	// initialize the key used for testing
+	if err := setupKeyIV(); err != nil {
+		os.Exit(setupErrorCode)
+	}
+	code := m.Run()
+	os.Exit(code)
+}
+
+func setupKeyIV() error {
+	keyDecoded, err := hex.DecodeString("000102030405060708090A0B0C0D0E0FF0E0D0C0B0A090807060504030201000")
+	if err != nil {
+		return err
+	}
+	testKey = [32]byte(keyDecoded)
+	testIV = [12]uint8{241, 194, 91, 221, 6, 243, 146, 157, 149, 144, 41, 39}
+	return nil
+}
+
+func TestReaderWriter(t *testing.T) {
 	toEncrypt := []byte("CECI EST un Tes")
 	chunkSize := 5
 	h := header{}
@@ -30,7 +49,7 @@ func TestReaderWriter(t *testing.T) {
 
 	// Buffer to write encrypted data to
 	buff := bytes.NewBuffer([]byte{})
-	ew, err := NewEncWriter(key1, h, buff)
+	ew, err := NewEncWriter(testKey, h, buff)
 	if err != nil {
 		panic(err)
 	}
@@ -46,7 +65,7 @@ func TestReaderWriter(t *testing.T) {
 		headerSizeByte+(len(toEncrypt)/chunkSize)*(chunkSize+seqNumSize+tagSizeByte))
 
 	// Now read from it
-	dr, err := NewDecReader(key1, buff)
+	dr, err := NewDecReader(testKey, buff)
 	if err != nil {
 		panic(err)
 	}
@@ -72,13 +91,6 @@ func TestReaderWriter(t *testing.T) {
 }
 
 func TestReadToWriteTo(t *testing.T) {
-	key, err := hex.DecodeString("000102030405060708090A0B0C0D0E0FF0E0D0C0B0A090807060504030201000")
-	if err != nil {
-		panic(err)
-	}
-	// create the key of 32 bit length
-	key1 := [keySize]byte(key)
-
 	toEncrypt := []byte("CECI EST un Test")
 	chunkSize := 5
 	h := header{}
@@ -94,18 +106,17 @@ func TestReadToWriteTo(t *testing.T) {
 	temp := bytes.NewBuffer([]byte{})
 	dest := bytes.NewBuffer([]byte{})
 	src := bytes.NewBuffer(toEncrypt)
-	ew, err := NewEncWriter(key1, h, temp)
+	ew, err := NewEncWriter(testKey, h, temp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dr, err := NewDecReader(key1, temp)
+	dr, err := NewDecReader(testKey, temp)
 	if err != nil {
 		t.Fatal(err)
 	}
 	io.Copy(ew, src)
 	ew.Close()
 	io.Copy(dest, dr)
-	
 
 	if string(dest.String()) != string(toEncrypt) {
 		t.Fail()

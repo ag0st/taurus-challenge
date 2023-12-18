@@ -103,6 +103,12 @@ func (ecw *encChunkWriter) Write(p []byte) (n int, err error) {
 // the destination if needed.
 func (ecw *encChunkWriter) Close() error {
 	ecw.isClosed = true
+	if ecw.firstWrite && ecw.offset == 0 { // nothing has been written
+		if w, ok := ecw.dest.(io.WriteCloser); ok {
+			return w.Close()
+		}
+		return nil
+	}
 	if ecw.offset == 0 {
 		return ErrNoLastChunk
 	}
@@ -171,20 +177,22 @@ func (ecw *encChunkWriter) sealBuf(isFinal bool) []byte {
 // It first stores all the data into its internal buffer
 // and then encrypt and push to the underlying writer when the Close is called.
 type encWholeWriter struct {
-	dest     io.Writer
-	buf      []byte      // buffer to retain at least a chunk. Plaintext
-	aesgcm   cipher.AEAD // The standard implementation of a cipher AEAD
-	header   header      // Header that store the configuration of the encryption
-	isClosed bool        // store if the writer has been closed
+	dest       io.Writer
+	buf        []byte      // buffer to retain at least a chunk. Plaintext
+	aesgcm     cipher.AEAD // The standard implementation of a cipher AEAD
+	header     header      // Header that store the configuration of the encryption
+	isClosed   bool        // store if the writer has been closed
+	firstWrite bool        // store if the writer is in first write (nothing has yet been written to it)
 }
 
 // newEncWholeWriter creates a new encWholeWriter
 func newEncWholeWriter(h header, dest io.Writer, aesgcm cipher.AEAD) *encWholeWriter {
 	return &encWholeWriter{
-		dest:   dest,
-		aesgcm: aesgcm,
-		header: h,
+		dest:     dest,
+		aesgcm:   aesgcm,
+		header:   h,
 		isClosed: false,
+		firstWrite: true,
 	}
 }
 
@@ -194,6 +202,7 @@ func (eww *encWholeWriter) Write(p []byte) (n int, err error) {
 	if eww.isClosed {
 		return 0, ErrWriterClosed
 	}
+	eww.firstWrite = false
 	// Add the data to the internal buffer
 	eww.buf = append(eww.buf, p...)
 	return len(p), nil
@@ -203,6 +212,13 @@ func (eww *encWholeWriter) Write(p []byte) (n int, err error) {
 // it has stored and push them into the underlying writer.
 func (eww *encWholeWriter) Close() error {
 	eww.isClosed = true
+	if eww.firstWrite && len(eww.buf) == 0 {
+		if w, ok := eww.dest.(io.WriteCloser); ok {
+			return w.Close()
+		}
+		return nil
+	}
+
 	// Seal the data and push it to the underlying writer
 	toPush := eww.aesgcm.Seal(nil, eww.header.IV(), eww.buf, eww.header.aad())
 	_, err := io.Copy(eww.dest, io.MultiReader(bytes.NewReader(eww.header[:]), bytes.NewReader(toPush)))
@@ -215,7 +231,7 @@ func (eww *encWholeWriter) Close() error {
 // ReadFrom is the implementation of io.ReaderFrom for the encWholeWriter
 func (eww *encWholeWriter) ReadFrom(r io.Reader) (n int64, err error) {
 	if eww.isClosed {
-		return 0, ErrWriterClosed 
+		return 0, ErrWriterClosed
 	}
 	// It does not use the method write, instead it pushes directly
 	// the whole data into the internal buffer of the encWholeWriter.
