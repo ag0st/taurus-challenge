@@ -16,6 +16,7 @@ import (
 	"github.com/ag0st/taurus-challenge/errs"
 	"github.com/ag0st/taurus-challenge/store"
 	"github.com/google/uuid"
+	"github.com/minio/minio-go/v7"
 )
 
 // Regexes for API path matching
@@ -24,11 +25,12 @@ var (
 	FileReWithID = regexp.MustCompile(`^/api/file/(.)+$`)
 )
 
-// Error declarations
+// Error declarations. This is the errors we throw back to the client.
 var (
-	ErrNotFound            = errs.New("unknown api path")
-	ErrInvalidFormName     = errs.New("invalid form name in multipart/form-data")
-	ErrInternalServerError = errs.New("internal server error")
+	ErrNotFound            = errs.NewWithCode("the requested resource is not found", http.StatusNotFound)
+	ErrAccessForbidden     = errs.NewWithCode("no authorization to the resource", http.StatusForbidden)
+	ErrInvalidFormName     = errs.NewWithCode("invalid form name in multipart/form-data", http.StatusBadRequest)
+	ErrInternalServerError = errs.NewWithCode("internal server error", http.StatusInternalServerError)
 )
 
 type storeConfig struct {
@@ -42,22 +44,62 @@ func (f handlerWithErrorFunc) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	return f(w, r)
 }
 
+// toApiError wraps the current error into an errs.Error with correct status code.
+// PRE: the caller must ensure that err is not nil.
+func toApiError(err error) *errs.Error {
+	// assert that the error is not nil
+	if err == nil {
+		log.Fatal("toApiError : the given error is nil")
+	}
+	var nerr error
+	// Here we differentiate the error returned by our service
+	// and the ones coming from MinIo
+	switch err := err.(type) {
+	case *errs.Error:
+		// Check that it is one of the errors that we can throw back
+		// to the client. If not, wrap it with an error
+		switch err {
+		case ErrNotFound, ErrInvalidFormName, ErrInternalServerError:
+			nerr = err
+		default:
+			nerr = errs.WrapWithError(err, ErrInternalServerError)
+		}
+	case minio.ErrorResponse:
+		// We check the error and collect the http status code given
+		switch err.StatusCode {
+		case http.StatusNotFound:
+			nerr = errs.WrapWithError(err, ErrNotFound)
+		case http.StatusForbidden:
+			nerr = errs.WrapWithError(err, ErrAccessForbidden)
+		default:
+			nerr = errs.WrapWithError(err, ErrInternalServerError)
+		}
+	default:
+		// if none of the above, we wrap the error in the errs.Error
+		// type with internal server error
+		nerr = errs.WrapWithError(err, ErrInternalServerError)
+	}
+
+	// We know that nerr is an errs.Error (or nil), we can cast safely
+	if res, ok := nerr.(*errs.Error); ok {
+		return res
+	} else {
+		log.Fatal("Cannot convert an error to the errs.Error format. Must never happens.")
+	}
+	return nil
+}
+
+// errorHandler handles the error coming from the service and push them back
+// in form of api error. It also logs the error using the default logger.
 func errorHandler(next handlerWithError) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		err := next.ServeHTTP(w, r)
 		if err != nil {
-			// Get the HTTP Code
-			httpCode := http.StatusInternalServerError
-			switch err {
-			case ErrNotFound:
-				httpCode = http.StatusNotFound
-			}
+			nerr := toApiError(err)
 			// print the error
 			log.Printf("[ERROR] %v", err)
 
 			err = errs.Collaps(errs.WrapPath(err, r.URL.Path))
-			// Now marshal the error and write it
-
 			// function to work with incoming errors
 			manageErrorDuringHandling := func(err error, w http.ResponseWriter) {
 				if err != nil {
@@ -66,7 +108,7 @@ func errorHandler(next handlerWithError) http.Handler {
 			}
 			body, errMarshal := json.Marshal(err)
 			manageErrorDuringHandling(errMarshal, w)
-			w.WriteHeader(httpCode)
+			w.WriteHeader(nerr.StatusCode)
 			_, errWrite := io.Copy(w, bytes.NewReader(body))
 			manageErrorDuringHandling(errWrite, w)
 		}
@@ -80,6 +122,7 @@ type handlerWithError interface {
 	ServeHTTP(w http.ResponseWriter, r *http.Request) error
 }
 
+// httpHandler is the main handler of the API. It dispatches the call to the right specific handler.
 func httpHandler(sc *storeConfig) handlerWithError {
 	fn := func(w http.ResponseWriter, r *http.Request) error {
 		// Switch on the type of request
@@ -97,6 +140,7 @@ func httpHandler(sc *storeConfig) handlerWithError {
 	return handlerWithErrorFunc(fn)
 }
 
+// handleListFile handles the requests for the list of files.
 func handleListFile(sc *storeConfig, w http.ResponseWriter, r *http.Request) error {
 	files, err := sc.conn.ListFiles(r.Context(), sc.bucket)
 	if err != nil {
@@ -105,17 +149,18 @@ func handleListFile(sc *storeConfig, w http.ResponseWriter, r *http.Request) err
 	// Convert the files for return
 	data, err := json.Marshal(api.FileItemFromMinio(files))
 	if err != nil {
-		return errs.WrapWithError(err, ErrInternalServerError)
+		return err
 	}
 	_, err = w.Write(data)
-	return errs.WrapWithError(err, ErrInternalServerError)
+	return err
 }
 
+// handleAddFile handles the request for adding a new file.
 func handleAddFile(sc *storeConfig, w http.ResponseWriter, r *http.Request) error {
 	// Get the multipart form data
 	err := r.ParseMultipartForm(100 << 20) // 100 MiB
 	if err != nil {
-		return errs.WrapWithError(err, ErrInternalServerError)
+		return err
 	}
 	reader, header, err := r.FormFile("file")
 	if err != nil {
@@ -147,7 +192,7 @@ func handleAddFile(sc *storeConfig, w http.ResponseWriter, r *http.Request) erro
 		config.GetCurrent().Minio().Bucket(), objectName, filename,
 		"application/octet-stream")
 	if err != nil {
-		return errs.WrapWithError(err, ErrInternalServerError)
+		return err
 	}
 	// transform the data in json
 	fus := api.FileUploadSuccess{
@@ -156,12 +201,13 @@ func handleAddFile(sc *storeConfig, w http.ResponseWriter, r *http.Request) erro
 	}
 	j, err := json.Marshal(fus)
 	if err != nil {
-		return errs.WrapWithError(err, ErrInternalServerError)
+		return err
 	}
 	_, err = w.Write(j)
-	return errs.WrapWithError(err, ErrInternalServerError)
+	return err
 }
 
+// handleGetFile handles the request for getting all the files
 func handleGetFile(sc *storeConfig, w http.ResponseWriter, r *http.Request) error {
 	objectName := strings.TrimPrefix(r.URL.Path, "/api/file/")
 	// retrieve the file
@@ -169,7 +215,7 @@ func handleGetFile(sc *storeConfig, w http.ResponseWriter, r *http.Request) erro
 	if err != nil {
 		return errs.WrapWithError(err, ErrInternalServerError)
 	}
-	
+
 	_, err = reader.WriteTo(w)
 	if err != nil {
 		return errs.WrapWithError(err, ErrInternalServerError)
@@ -183,6 +229,7 @@ func handleGetFile(sc *storeConfig, w http.ResponseWriter, r *http.Request) erro
 	return nil
 }
 
+// init is the first method called (before main). It parses the configuration and the flags
 func init() {
 	// Generate our config based on the config supplied
 	// by the user in the flags
@@ -222,7 +269,7 @@ func main() {
 		handler,
 	)
 	srv := &http.Server{
-		Addr: config.GetCurrent().Service().Address(),
+		Addr:    config.GetCurrent().Service().Address(),
 		Handler: mux,
 	}
 

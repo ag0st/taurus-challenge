@@ -11,9 +11,15 @@ import (
 
 // Errors declarations
 var (
+	// ErrTooMuchChunk error is thrown when the number of chunks to encrypt a file is too
+	// high.
 	ErrTooMuchChunk error = errs.New("too much chunk produced. Max = 0xFFFF_FFFF")
-	ErrNoLastChunk  error = errs.New("no last chunk to write when closing the writer")
-	ErrWriteClosed  error = errs.New("writer already closed")
+	// ErrNoLastChunk error is thrown where it remains nothing to write to the underlying
+	// writer at the closing stage.
+	ErrNoLastChunk error = errs.New("no last chunk to write when closing the writer")
+	// ErrWriterClosed error is thrown when trying to write to a writer that has already been
+	// closed.
+	ErrWriterClosed error = errs.New("writer already closed")
 )
 
 // newEncWriter creates the right type of writer regarding the data stored inside the header.
@@ -45,10 +51,10 @@ func newEncChunkWriter(h header, dest io.Writer, aesgcm cipher.AEAD) *encChunkWr
 }
 
 // encChunkWriter wraps a Writer and encrypt data before passing it to the writer.
-// It is a WriteCloser.
-// It first copy plaintext into its internal buffer and then encrypt it to push it into the writer.
+// It is a io.WriteCloser.
+// It first copies plaintext into its internal buffer and then encrypt it to push it into the writer.
 // It keeps always a fully plaintext chunk inside its buffer for the closing stage
-// where it set last chunk flag and push a last time into the writer before closing.
+// where it set last chunk flag and push a last time into the underlying writer before closing.
 type encChunkWriter struct {
 	dest       io.Writer
 	buf        []byte      // buffer to retain at least a chunk. Plaintext
@@ -62,7 +68,7 @@ type encChunkWriter struct {
 
 func (ecw *encChunkWriter) Write(p []byte) (n int, err error) {
 	if ecw.isClosed {
-		return 0, ErrWriteClosed
+		return 0, ErrWriterClosed
 	}
 	// encrypt until we have read everything and that it remains enough for a last chunk
 	for n < len(p) && len(p)-n > int(ecw.header.ChunkSize())-ecw.offset {
@@ -109,6 +115,9 @@ func (ecw *encChunkWriter) Close() error {
 
 // ReadFrom is the implementation of io.ReaderFrom for the encChunkWriter.
 func (ecw *encChunkWriter) ReadFrom(r io.Reader) (n int64, err error) {
+	if ecw.isClosed {
+		return 0, ErrWriterClosed
+	}
 	// we read directly by chunk size and push it to the write method
 	var buffer = make([]byte, ecw.header.ChunkSize())
 	for {
@@ -162,10 +171,11 @@ func (ecw *encChunkWriter) sealBuf(isFinal bool) []byte {
 // It first stores all the data into its internal buffer
 // and then encrypt and push to the underlying writer when the Close is called.
 type encWholeWriter struct {
-	dest   io.Writer
-	buf    []byte      // buffer to retain at least a chunk. Plaintext
-	aesgcm cipher.AEAD // The standard implementation of a cipher AEAD
-	header header      // Header that store the configuration of the encryption
+	dest     io.Writer
+	buf      []byte      // buffer to retain at least a chunk. Plaintext
+	aesgcm   cipher.AEAD // The standard implementation of a cipher AEAD
+	header   header      // Header that store the configuration of the encryption
+	isClosed bool        // store if the writer has been closed
 }
 
 // newEncWholeWriter creates a new encWholeWriter
@@ -174,28 +184,39 @@ func newEncWholeWriter(h header, dest io.Writer, aesgcm cipher.AEAD) *encWholeWr
 		dest:   dest,
 		aesgcm: aesgcm,
 		header: h,
+		isClosed: false,
 	}
 }
 
-// Write is the implemention of write of the encWholeWriter. It only stores data into its internal
+// Write is the implemention of io.Writer of the encWholeWriter. It only stores data into its internal
 // buffer. The encryption is done in the Close function.
 func (eww *encWholeWriter) Write(p []byte) (n int, err error) {
+	if eww.isClosed {
+		return 0, ErrWriterClosed
+	}
 	// Add the data to the internal buffer
 	eww.buf = append(eww.buf, p...)
 	return len(p), nil
 }
 
-// Close is the implementation of the Close function of a encWholeWriter. It Seals the data
+// Close is the implementation of the io.Closer function of a encWholeWriter. It Seals the data
 // it has stored and push them into the underlying writer.
 func (eww *encWholeWriter) Close() error {
+	eww.isClosed = true
 	// Seal the data and push it to the underlying writer
 	toPush := eww.aesgcm.Seal(nil, eww.header.IV(), eww.buf, eww.header.aad())
 	_, err := io.Copy(eww.dest, io.MultiReader(bytes.NewReader(eww.header[:]), bytes.NewReader(toPush)))
+	if w, ok := eww.dest.(io.WriteCloser); ok {
+		return w.Close()
+	}
 	return err
 }
 
 // ReadFrom is the implementation of io.ReaderFrom for the encWholeWriter
 func (eww *encWholeWriter) ReadFrom(r io.Reader) (n int64, err error) {
+	if eww.isClosed {
+		return 0, ErrWriterClosed 
+	}
 	// It does not use the method write, instead it pushes directly
 	// the whole data into the internal buffer of the encWholeWriter.
 	// This way it uses 1 buffer less

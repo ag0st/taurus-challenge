@@ -8,10 +8,11 @@ import (
 // Error struct easyier error return to the api and is used
 // accross the project.
 type Error struct {
-	Err       error     `json:"-"`
-	Message   string    `json:"message,omitempty"`
-	Path      string    `json:"path,omitempty"`
-	Timestamp time.Time `json:"timestamp,omitempty"`
+	Err        error     `json:"-"`
+	StatusCode int       `json:"_"`
+	Message    string    `json:"message,omitempty"`
+	Path       string    `json:"path,omitempty"`
+	Timestamp  time.Time `json:"timestamp,omitempty"`
 }
 
 // Implementation of the error interface for this struct
@@ -42,6 +43,11 @@ func New(message string) *Error {
 	return &Error{Message: message, Timestamp: time.Now()}
 }
 
+// New creates a new error with error code
+func NewWithCode(message string, code int) *Error {
+	return &Error{StatusCode: code, Message: message, Timestamp: time.Now()}
+}
+
 // Add the message to an error, if cannot or message already exists,
 // wrap it with another one with the new path
 // Wrap returns nil if err == nil
@@ -58,6 +64,7 @@ func Wrap(err error, message string) error {
 	return &Error{Err: err, Message: message}
 }
 
+// WrapWithError wraps err inside an existing error
 func WrapWithError(err error, err2 error) error {
 	if err == nil {
 		return nil
@@ -99,13 +106,16 @@ func Collaps(e error) error {
 	var ce error = e
 
 	// find first path
-	for res.Path == "" || res.Message == "" {
+	for res.Path == "" || res.Message == "" || res.StatusCode == 0{
 		if ce.Error() != "" {
 			res.Message = ce.Error()
 		}
 		if c, ok := ce.(*Error); ok {
 			if c.Path != "" {
 				res.Path = c.Path
+			}
+			if c.StatusCode != 0 {
+				res.StatusCode = c.StatusCode
 			}
 			ce = c.Err
 		} else {

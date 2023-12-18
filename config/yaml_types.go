@@ -36,20 +36,20 @@ func extractSize(size string) (uint64, error) {
 	split := strings.Split(size, " ") // space separator
 	if len(split) != 2 {
 		return 0, errs.New(fmt.Sprintf("cannot parse %s, must be of type: \n "+
-			"xx yy : where xx is an int and yy is one of [B, KBi, MBi, GBi]", size))
+			"xx yy : where xx is an int and yy is one of [B, KiB, MiB, GiB]", size))
 	}
 	var shifter = 0
 	switch split[1] {
 	case "B": // byte
 		break
-	case "KBi": // kilobytes
+	case "KiB": // kilobytes
 		shifter = 10
-	case "MBi": // megabytes
+	case "MiB": // megabytes
 		shifter = 20
-	case "GBi": // gigabytes
+	case "GiB": // gigabytes
 		shifter = 30
 	default:
-		return 0, errs.New(fmt.Sprintf("unit uknown [%s], use [B, KBi, MBi, GBi]", split[1]))
+		return 0, errs.New(fmt.Sprintf("unit uknown [%s], use [B, KiB, MiB, GiB]", split[1]))
 	}
 	quantity, err := strconv.Atoi(split[0])
 	if err != nil {
