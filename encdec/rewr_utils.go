@@ -1,4 +1,4 @@
-// Package encdec provides the declaration of the methods Encrypt and Decrypt. Theses two methods allows to encrypt and decrypt data
+// Package encdec provides the declaration of the methods NewHeader, NewDecReader and NewEncWriter. Theses two methods allows to encrypt and decrypt data
 // with AES GCM. This encryption method allow to authenticate the data for data-at-rest storage.
 // In AES GCM, the IV hasn't to be secret and is already authenticated in the block encryption process, so no need to store it
 // in the the addition data.

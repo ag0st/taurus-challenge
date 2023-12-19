@@ -1,5 +1,3 @@
-# Upgrade
-
 ## Form data
 Instead of using ParsMultipartForm, we can imagine something working in a more
 _streamy way_. We do not load the entire file, but instead we read part by part
