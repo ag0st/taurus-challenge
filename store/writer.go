@@ -40,11 +40,11 @@ type uploadFinished struct {
 
 // newStoreWriter creates the right type of storeWriter regarding the
 // configuration.
-func newStoreWriter(ctx context.Context, chunkSize uint64, core *minio.Core, config uploadConfig) storeWriterCloser {
+func newStoreWriter(ctx context.Context, chunkSize uint64, conn *Connection, config uploadConfig) storeWriterCloser {
 	if chunkSize > 0 {
-		return newChunckWriter(ctx, chunkSize, core, config)
+		return newChunckWriter(ctx, chunkSize, conn.core, config)
 	} else {
-		return newAutoWriter(ctx, core, config)
+		return newAutoWriter(ctx, conn.client, config)
 	}
 }
 
@@ -65,11 +65,11 @@ type storeChunkWriter struct {
 	isClosed    bool                 // state of the writer (closed of not)
 	ctx         context.Context      // current context for cancelation
 	fchan       chan uploadFinished  // fchan is a channel to indicate when the upload is finished
-	core        *minio.Core          // the minio core to create new upload
+	core        Core                 // the minio core to create new upload
 }
 
 // newChunkWriter creates a new storeWriterCloser implementing the chunk technique.
-func newChunckWriter(ctx context.Context, chunkSize uint64, core *minio.Core, config uploadConfig) storeWriterCloser {
+func newChunckWriter(ctx context.Context, chunkSize uint64, core Core, config uploadConfig) storeWriterCloser {
 	return &storeChunkWriter{
 		bucketName:  config.bucketName,
 		objectName:  config.objectName,
@@ -127,16 +127,26 @@ func (scw *storeChunkWriter) Write(p []byte) (n int, err error) {
 func (scw *storeChunkWriter) Close() error {
 	// close the multipart upload
 	scw.isClosed = true
-	go func() {
-		info, err := scw.core.CompleteMultipartUpload(scw.ctx, scw.bucketName, scw.objectName, scw.uploadId, scw.parts, minio.PutObjectOptions{})
-		scw.fchan <- uploadFinished{info, err}
-	}()
-	return nil
+	select {
+	case <-scw.ctx.Done():
+		scw.Cancel()
+		return scw.ctx.Err()
+	default:
+		go func() {
+			info, err := scw.core.CompleteMultipartUpload(scw.ctx, scw.bucketName, scw.objectName, scw.uploadId, scw.parts, minio.PutObjectOptions{})
+			scw.fchan <- uploadFinished{info, err}
+		}()
+		return nil
+	}
 }
 
 func (scw *storeChunkWriter) WaitOnFinished() (minio.UploadInfo, error) {
-	res := <-scw.fchan
-	return res.info, res.err
+	select {
+	case <-scw.ctx.Done():
+		return minio.UploadInfo{}, scw.ctx.Err()
+	case res := <-scw.fchan:
+		return res.info, res.err
+	}
 }
 
 func (scw *storeChunkWriter) Cancel() error {
@@ -154,12 +164,12 @@ type storeAutoWriter struct {
 	isClosed    bool
 	ctx         context.Context
 	fchan       chan uploadFinished
-	core        *minio.Core
+	client      Client
 	buf         []byte
 }
 
 // newAutoWriter creates a new auto writer.
-func newAutoWriter(ctx context.Context, core *minio.Core, config uploadConfig) storeWriterCloser {
+func newAutoWriter(ctx context.Context, client Client, config uploadConfig) storeWriterCloser {
 	return &storeAutoWriter{
 		bucketName:  config.bucketName,
 		objectName:  config.objectName,
@@ -167,7 +177,7 @@ func newAutoWriter(ctx context.Context, core *minio.Core, config uploadConfig) s
 		isClosed:    false,
 		ctx:         ctx,
 		fchan:       make(chan uploadFinished, 1), // do not block on write
-		core:        core,
+		client:      client,
 	}
 }
 
@@ -176,30 +186,45 @@ func (saw *storeAutoWriter) Write(p []byte) (n int, err error) {
 	if saw.isClosed {
 		return 0, ErrWriterClosed
 	}
-	saw.buf = append(saw.buf, p...)
-	return len(p), nil
-
+	select {
+	case <-saw.ctx.Done():
+		saw.Cancel()
+		return 0, saw.ctx.Err()
+	default:
+		saw.buf = append(saw.buf, p...)
+		return len(p), nil
+	}
 }
 
 func (saw *storeAutoWriter) WaitOnFinished() (minio.UploadInfo, error) {
-	res := <-saw.fchan
-	return res.info, res.err
+	select {
+	case <-saw.ctx.Done():
+		return minio.UploadInfo{}, saw.ctx.Err()
+	case res := <-saw.fchan:
+		return res.info, res.err
+	}
 }
 
 func (saw *storeAutoWriter) Cancel() error {
 	saw.isClosed = true
 	return nil
 }
+
 // Close is the implementation of io.Closer
 // It uploads the whole buffered data as one to the minio bucket
 func (saw *storeAutoWriter) Close() error {
 	saw.isClosed = true
-	info, err := saw.core.Client.PutObject(saw.ctx, saw.bucketName,
-		saw.objectName, bytes.NewReader(saw.buf), int64(len(saw.buf)), minio.PutObjectOptions{
-			PartSize:         uint64(len(saw.buf)),
-			DisableMultipart: true,
-		})
-	// post to the channel if somebody is waiting
-	saw.fchan <- uploadFinished{info, err}
-	return err
+	select {
+	case <-saw.ctx.Done():
+		return saw.ctx.Err()
+	default:
+		info, err := saw.client.PutObject(saw.ctx, saw.bucketName,
+			saw.objectName, bytes.NewReader(saw.buf), int64(len(saw.buf)), minio.PutObjectOptions{
+				PartSize:         uint64(len(saw.buf)),
+				DisableMultipart: true,
+			})
+		// post to the channel if somebody is waiting
+		saw.fchan <- uploadFinished{info, err}
+		return err
+	}
 }
